@@ -1,0 +1,62 @@
+// Prisma-схема офтальмологического центра.
+//
+// Провайдер по умолчанию — sqlite (frictionless локальный запуск и тесты).
+// Для PostgreSQL (Docker Compose) провайдер переключается скриптом
+// `npm run use:postgres` (см. scripts/set-db.js), который меняет строку ниже.
+//
+// Заметка: role и status хранятся как String (а не enum), потому что SQLite
+// не поддерживает enum в Prisma. Допустимые значения проверяет zod на уровне API.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String
+  role         String        @default("patient") // "patient" | "registrar"
+  fullName     String
+  createdAt    DateTime      @default(now())
+  appointments Appointment[]
+}
+
+model Doctor {
+  id           String        @id @default(cuid())
+  fullName     String
+  specialty    String
+  schedules    Schedule[]
+  appointments Appointment[]
+}
+
+model Schedule {
+  id       String  @id @default(cuid())
+  doctorId String
+  doctor   Doctor  @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  date     String  // ISO-дата "YYYY-MM-DD"
+  timeSlot String  // "HH:mm"
+  isBooked Boolean @default(false)
+
+  @@unique([doctorId, date, timeSlot])
+  @@index([doctorId, date])
+}
+
+model Appointment {
+  id        String   @id @default(cuid())
+  patientId String
+  patient   User     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctorId  String
+  doctor    Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  date      String   // "YYYY-MM-DD"
+  timeSlot  String   // "HH:mm"
+  status    String   @default("active") // "active" | "cancelled" | "completed"
+  createdAt DateTime @default(now())
+
+  @@index([patientId])
+  @@index([doctorId, date])
+}

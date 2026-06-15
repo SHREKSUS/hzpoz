@@ -1,0 +1,64 @@
+# Поднимает всё приложение одной командой:
+#   docker compose up --build
+#
+# Сервисы:
+#   db       — PostgreSQL
+#   backend  — REST API (на старте применяет схему, сидирует БД)
+#   frontend — React (Vite preview), проксирует /api на backend
+#
+# После запуска:
+#   Фронтенд:  http://localhost:5173
+#   API:       http://localhost:4000/api
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: clinic
+      POSTGRES_PASSWORD: clinic
+      POSTGRES_DB: clinic
+    ports:
+      - '5432:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U clinic']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgresql://clinic:clinic@db:5432/clinic?schema=public
+      JWT_SECRET: docker-dev-secret-change-me-32-chars
+      JWT_EXPIRES_IN: 2h
+      CORS_ORIGIN: http://localhost:5173
+      SEED_PATIENT_EMAIL: patient@test.local
+      SEED_PATIENT_PASSWORD: Patient123!
+      SEED_REGISTRAR_EMAIL: registrar@test.local
+      SEED_REGISTRAR_PASSWORD: Registrar123!
+    ports:
+      - '4000:4000'
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      # vite preview проксирует /api на сервис backend внутри сети compose.
+      VITE_API_PROXY: http://backend:4000
+    ports:
+      - '5173:5173'
+    depends_on:
+      - backend
+
+volumes:
+  db_data:

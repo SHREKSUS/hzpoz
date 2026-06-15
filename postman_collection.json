@@ -1,0 +1,341 @@
+{
+  "info": {
+    "name": "Офтальмологический центр API",
+    "description": "Коллекция запросов к API записи пациентов. Переменные: baseUrl, token, doctorId, appointmentId, slotDate, slotTime.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000/api" },
+    { "key": "patientEmail", "value": "patient@test.local" },
+    { "key": "patientPassword", "value": "Patient123!" },
+    { "key": "registrarEmail", "value": "registrar@test.local" },
+    { "key": "registrarPassword", "value": "Registrar123!" },
+    { "key": "token", "value": "" },
+    { "key": "doctorId", "value": "" },
+    { "key": "appointmentId", "value": "" },
+    { "key": "slotDate", "value": "" },
+    { "key": "slotTime", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register patient",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/register", "host": ["{{baseUrl}}"], "path": ["auth", "register"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"newbie+{{$timestamp}}@test.local\",\n  \"password\": \"Newbie123!\",\n  \"fullName\": \"Новый Пациент\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('has token', () => pm.expect(pm.response.json().token).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login patient",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{patientEmail}}\",\n  \"password\": \"{{patientPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json();",
+                  "pm.collectionVariables.set('token', res.token);",
+                  "pm.test('token saved', () => pm.expect(res.token).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login wrong password (401)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{patientEmail}}\",\n  \"password\": \"wrong\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 401', () => pm.response.to.have.status(401));"] }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Doctors",
+      "item": [
+        {
+          "name": "List doctors",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/doctors", "host": ["{{baseUrl}}"], "path": ["doctors"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const list = pm.response.json();",
+                  "pm.test('is array', () => pm.expect(list).to.be.an('array'));",
+                  "if (list.length) { pm.collectionVariables.set('doctorId', list[0].id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Doctor slots",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/doctors/{{doctorId}}/slots?date={{slotDate}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["doctors", "{{doctorId}}", "slots"],
+              "query": [{ "key": "date", "value": "{{slotDate}}" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Вычисляем ближайший будний день (сидинг пропускает выходные).",
+                  "const d = new Date();",
+                  "do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6);",
+                  "pm.collectionVariables.set('slotDate', d.toISOString().slice(0, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const slots = pm.response.json();",
+                  "pm.test('has free slots', () => pm.expect(slots.length).to.be.above(0));",
+                  "if (slots.length) {",
+                  "  pm.collectionVariables.set('slotDate', slots[0].date);",
+                  "  pm.collectionVariables.set('slotTime', slots[0].timeSlot);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Appointments",
+      "item": [
+        {
+          "name": "Create appointment",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/appointments", "host": ["{{baseUrl}}"], "path": ["appointments"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doctorId\": \"{{doctorId}}\",\n  \"date\": \"{{slotDate}}\",\n  \"timeSlot\": \"{{slotTime}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('appointmentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create same slot again (409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/appointments", "host": ["{{baseUrl}}"], "path": ["appointments"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"doctorId\": \"{{doctorId}}\",\n  \"date\": \"{{slotDate}}\",\n  \"timeSlot\": \"{{slotTime}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 409', () => pm.response.to.have.status(409));"] }
+            }
+          ]
+        },
+        {
+          "name": "List my appointments",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/appointments", "host": ["{{baseUrl}}"], "path": ["appointments"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('contains created appointment', () => {",
+                  "  const ids = pm.response.json().map(a => a.id);",
+                  "  pm.expect(ids).to.include(pm.collectionVariables.get('appointmentId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List without token (401)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/appointments", "host": ["{{baseUrl}}"], "path": ["appointments"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 401', () => pm.response.to.have.status(401));"] }
+            }
+          ]
+        },
+        {
+          "name": "Cancel appointment",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/appointments/{{appointmentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["appointments", "{{appointmentId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is cancelled', () => pm.expect(pm.response.json().status).to.eql('cancelled'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Patients",
+      "item": [
+        {
+          "name": "Me",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/patients/me", "host": ["{{baseUrl}}"], "path": ["patients", "me"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns email', () => pm.expect(pm.response.json().email).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Login registrar",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{registrarEmail}}\",\n  \"password\": \"{{registrarPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('token', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "All appointments (admin)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/admin/appointments",
+              "host": ["{{baseUrl}}"],
+              "path": ["admin", "appointments"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('is array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

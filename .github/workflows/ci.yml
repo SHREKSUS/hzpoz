@@ -1,0 +1,196 @@
+name: CI
+
+# Запускается на пуш и пул-реквесты, а также вручную (кнопка Run workflow).
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# Общие настройки окружения для backend (ничего секретного — учебный проект).
+# В реальном проекте JWT_SECRET брался бы из GitHub Secrets.
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Проверка типов и сборка (backend + frontend)
+  # ---------------------------------------------------------------------------
+  build:
+    name: Сборка и проверка типов
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установка Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Backend — установка зависимостей
+        working-directory: backend
+        run: npm install
+
+      - name: Backend — генерация Prisma Client
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: Backend — проверка типов
+        working-directory: backend
+        run: npx tsc --noEmit
+
+      - name: Frontend — установка зависимостей
+        working-directory: frontend
+        run: npm install
+
+      - name: Frontend — проверка типов и сборка
+        working-directory: frontend
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # 2. Юнит-тесты backend (Jest)
+  # ---------------------------------------------------------------------------
+  unit-tests:
+    name: Юнит-тесты (Jest)
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      DATABASE_URL: 'file:./test.db'
+      JWT_SECRET: ci-unit-test-secret-32-characters-long
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установка Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Установка зависимостей
+        working-directory: backend
+        run: npm install
+
+      - name: Подготовка тестовой БД (SQLite)
+        working-directory: backend
+        run: |
+          npx prisma generate
+          npx prisma db push --skip-generate
+
+      - name: Запуск Jest
+        working-directory: backend
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # 3. API-тесты (Postman-коллекция через Newman)
+  # ---------------------------------------------------------------------------
+  api-tests:
+    name: API-тесты (Newman)
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: development
+      PORT: '4000'
+      DATABASE_URL: 'file:./dev.db'
+      JWT_SECRET: ci-api-test-secret-32-characters-long
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установка Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Установка зависимостей backend
+        working-directory: backend
+        run: npm install
+
+      - name: Подготовка и наполнение БД
+        working-directory: backend
+        run: |
+          npx prisma generate
+          npx prisma db push --skip-generate
+          npm run seed
+
+      - name: Установка Newman
+        run: npm install -g newman
+
+      - name: Запуск backend и прогон Newman
+        working-directory: backend
+        run: |
+          # Поднимаем API в фоне.
+          npm run dev > backend.log 2>&1 &
+          # Ждём готовности (до ~60 секунд).
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4000/api/health > /dev/null; then
+              echo "API готов."
+              break
+            fi
+            echo "Жду запуска API... ($i)"
+            sleep 2
+          done
+          # Если так и не поднялся — показываем лог и падаем.
+          if ! curl -sf http://localhost:4000/api/health > /dev/null; then
+            echo "API не запустился. Лог:"; cat backend.log; exit 1
+          fi
+          # Прогоняем коллекцию Postman.
+          newman run ../postman_collection.json
+
+  # ---------------------------------------------------------------------------
+  # 4. E2E-тесты интерфейса (Selenium + Chrome, headless)
+  # ---------------------------------------------------------------------------
+  e2e-tests:
+    name: E2E-тесты (Selenium)
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: development
+      PORT: '4000'
+      DATABASE_URL: 'file:./dev.db'
+      JWT_SECRET: ci-e2e-test-secret-32-characters-long
+      HEADLESS: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установка Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # На ubuntu-latest Google Chrome предустановлен; ставим явно для надёжности.
+      - name: Установка Google Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Установка зависимостей backend
+        working-directory: backend
+        run: npm install
+
+      - name: Подготовка и наполнение БД
+        working-directory: backend
+        run: |
+          npx prisma generate
+          npx prisma db push --skip-generate
+          npm run seed
+
+      - name: Установка зависимостей frontend
+        working-directory: frontend
+        run: npm install
+
+      - name: Запуск серверов и прогон Selenium-теста
+        run: |
+          # Поднимаем backend в фоне.
+          (cd backend && npm run dev > backend.log 2>&1 &)
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4000/api/health > /dev/null && break
+            echo "Жду backend... ($i)"; sleep 2
+          done
+          curl -sf http://localhost:4000/api/health > /dev/null || (cat backend/backend.log; exit 1)
+          echo "Backend готов."
+
+          # Поднимаем frontend в фоне.
+          (cd frontend && npm run dev > frontend.log 2>&1 &)
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5173/ > /dev/null && break
+            echo "Жду frontend... ($i)"; sleep 2
+          done
+          curl -sf http://localhost:5173/ > /dev/null || (cat frontend/frontend.log; exit 1)
+          echo "Frontend готов."
+
+          # Прогоняем E2E-тест интерфейса.
+          cd frontend && npm run selenium:test

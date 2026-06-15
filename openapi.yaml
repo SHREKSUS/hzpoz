@@ -1,0 +1,448 @@
+openapi: 3.0.3
+info:
+  title: Офтальмологический центр — API электронной записи
+  description: >
+    REST API для записи пациентов на приём к офтальмологу.
+    Аутентификация — JWT (Authorization: Bearer <token>).
+  version: 1.0.0
+servers:
+  - url: http://localhost:4000/api
+    description: Локальный сервер
+
+tags:
+  - name: Auth
+  - name: Doctors
+  - name: Appointments
+  - name: Patients
+  - name: Admin
+
+paths:
+  /health:
+    get:
+      tags: [Auth]
+      summary: Проверка состояния сервиса
+      responses:
+        '200':
+          description: Сервис работает
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация пациента
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterInput'
+      responses:
+        '201':
+          description: Пациент создан, возвращён JWT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Error'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Авторизация, выдача JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /doctors:
+    get:
+      tags: [Doctors]
+      summary: Список врачей-офтальмологов
+      responses:
+        '200':
+          description: Массив врачей
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Doctor'
+
+  /doctors/{id}/slots:
+    get:
+      tags: [Doctors]
+      summary: Свободные интервалы врача на дату
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            example: '2026-06-15'
+      responses:
+        '200':
+          description: Массив свободных слотов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Slot'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /appointments:
+    get:
+      tags: [Appointments]
+      summary: Записи текущего пациента
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Массив записей
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Appointment'
+        '401':
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Appointments]
+      summary: Создать запись
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppointmentInput'
+      responses:
+        '201':
+          description: Запись создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: Интервал уже занят
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /appointments/{id}:
+    put:
+      tags: [Appointments]
+      summary: Перенос/изменение записи
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAppointmentInput'
+      responses:
+        '200':
+          description: Запись обновлена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Appointments]
+      summary: Отмена записи
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Запись отменена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '401':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /patients/me:
+    get:
+      tags: [Patients]
+      summary: Данные текущего пользователя
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Профиль пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /admin/appointments:
+    get:
+      tags: [Admin]
+      summary: Все записи с фильтрами (только регистратор)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: doctorId
+          in: query
+          schema:
+            type: string
+        - name: date
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, cancelled, completed]
+      responses:
+        '200':
+          description: Массив записей
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Appointment'
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+
+  /admin/schedule:
+    get:
+      tags: [Admin]
+      summary: Расписание врача (только регистратор)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: doctorId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: date
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Массив слотов
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Admin]
+      summary: Добавить слот в расписание (только регистратор)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppointmentInput'
+      responses:
+        '201':
+          description: Слот добавлен
+        '401':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Error:
+      description: Ошибка
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    ValidationError:
+      description: Ошибка валидации входных данных
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+  schemas:
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    RegisterInput:
+      type: object
+      required: [email, password, fullName]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+        fullName:
+          type: string
+
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [patient, registrar]
+        fullName:
+          type: string
+
+    Doctor:
+      type: object
+      properties:
+        id:
+          type: string
+        fullName:
+          type: string
+        specialty:
+          type: string
+
+    Slot:
+      type: object
+      properties:
+        date:
+          type: string
+        timeSlot:
+          type: string
+
+    CreateAppointmentInput:
+      type: object
+      required: [doctorId, date, timeSlot]
+      properties:
+        doctorId:
+          type: string
+        date:
+          type: string
+          example: '2026-06-15'
+        timeSlot:
+          type: string
+          example: '10:00'
+
+    UpdateAppointmentInput:
+      type: object
+      required: [date, timeSlot]
+      properties:
+        doctorId:
+          type: string
+        date:
+          type: string
+        timeSlot:
+          type: string
+
+    Appointment:
+      type: object
+      properties:
+        id:
+          type: string
+        doctorId:
+          type: string
+        doctorName:
+          type: string
+        patientId:
+          type: string
+        patientName:
+          type: string
+        date:
+          type: string
+        timeSlot:
+          type: string
+        status:
+          type: string
+          enum: [active, cancelled, completed]
+        createdAt:
+          type: string
