@@ -1,0 +1,181 @@
+// Jenkins Pipeline для Windows-агента.
+//
+// Делает то же, что Jenkinsfile (Unix), но команды выполняются через `bat`,
+// а фоновые серверы поднимаются и гасятся через PowerShell (Start-Process +
+// taskkill /T). Повторяет конвейер: сборка/типы, Jest, Newman (API), Selenium (E2E).
+//
+// Требования к Windows-агенту:
+//   - Node.js 20+ и npm в PATH (плагин NodeJS: tools { nodejs 'node20' })
+//   - Google Chrome (драйвер Selenium скачается сам)
+//   - PowerShell (есть в Windows по умолчанию)
+
+pipeline {
+  agent any
+
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+    timestamps()
+    disableConcurrentBuilds()
+  }
+
+  // tools {
+  //   nodejs 'node20'
+  // }
+
+  environment {
+    JWT_SECRET = 'ci-jenkins-secret-32-characters-long-xx'
+    PORT = '4000'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Зависимости') {
+      steps {
+        dir('backend') {
+          bat 'npm install'
+          bat 'npx prisma generate'
+        }
+        dir('frontend') {
+          bat 'npm install'
+        }
+      }
+    }
+
+    stage('Сборка и проверка типов') {
+      steps {
+        dir('backend') {
+          bat 'npx tsc --noEmit'
+        }
+        dir('frontend') {
+          bat 'npm run build'
+        }
+      }
+    }
+
+    stage('Юнит-тесты (Jest)') {
+      environment {
+        NODE_ENV = 'test'
+        DATABASE_URL = 'file:./test.db'
+      }
+      steps {
+        dir('backend') {
+          bat 'npx prisma db push --skip-generate'
+          bat 'npm test'
+        }
+      }
+    }
+
+    stage('API-тесты (Newman)') {
+      environment {
+        NODE_ENV = 'development'
+        DATABASE_URL = 'file:./dev.db'
+      }
+      steps {
+        // Поднимаем backend, ждём готовности, прогоняем Postman-коллекцию и
+        // в блоке finally гарантированно останавливаем процесс (вместе с детьми).
+        powershell '''
+          $ErrorActionPreference = "Stop"
+
+          Push-Location backend
+          npx prisma db push --skip-generate
+          if ($LASTEXITCODE -ne 0) { throw "prisma db push завершился с ошибкой" }
+          npm run seed
+          if ($LASTEXITCODE -ne 0) { throw "seed завершился с ошибкой" }
+          Pop-Location
+
+          $backend = Start-Process cmd.exe -ArgumentList "/c","npm run dev > backend.log 2>&1" `
+            -WorkingDirectory "backend" -PassThru -WindowStyle Hidden
+          try {
+            $ok = $false
+            foreach ($i in 1..30) {
+              try {
+                Invoke-WebRequest "http://localhost:4000/api/health" -UseBasicParsing -TimeoutSec 3 | Out-Null
+                $ok = $true; break
+              } catch { Write-Host "Жду backend... $i"; Start-Sleep -Seconds 2 }
+            }
+            if (-not $ok) { Get-Content backend\\backend.log -ErrorAction SilentlyContinue; throw "Backend не запустился" }
+            Write-Host "Backend готов."
+
+            npx --yes newman run postman_collection.json
+            if ($LASTEXITCODE -ne 0) { throw "Newman: есть упавшие проверки" }
+          } finally {
+            taskkill /F /T /PID $backend.Id 2>$null | Out-Null
+          }
+        '''
+      }
+    }
+
+    stage('E2E-тесты (Selenium)') {
+      environment {
+        NODE_ENV = 'development'
+        DATABASE_URL = 'file:./dev.db'
+        HEADLESS = '1'
+      }
+      steps {
+        // Поднимаем backend и frontend, прогоняем Selenium-тест, затем гасим оба.
+        powershell '''
+          $ErrorActionPreference = "Stop"
+
+          Push-Location backend
+          npx prisma db push --skip-generate
+          if ($LASTEXITCODE -ne 0) { throw "prisma db push завершился с ошибкой" }
+          npm run seed
+          if ($LASTEXITCODE -ne 0) { throw "seed завершился с ошибкой" }
+          Pop-Location
+
+          $backend = Start-Process cmd.exe -ArgumentList "/c","npm run dev > backend.log 2>&1" `
+            -WorkingDirectory "backend" -PassThru -WindowStyle Hidden
+          $frontend = Start-Process cmd.exe -ArgumentList "/c","npm run dev > frontend.log 2>&1" `
+            -WorkingDirectory "frontend" -PassThru -WindowStyle Hidden
+          try {
+            $ok = $false
+            foreach ($i in 1..30) {
+              try {
+                Invoke-WebRequest "http://localhost:4000/api/health" -UseBasicParsing -TimeoutSec 3 | Out-Null
+                $ok = $true; break
+              } catch { Write-Host "Жду backend... $i"; Start-Sleep -Seconds 2 }
+            }
+            if (-not $ok) { Get-Content backend\\backend.log -ErrorAction SilentlyContinue; throw "Backend не запустился" }
+
+            $ok = $false
+            foreach ($i in 1..30) {
+              try {
+                Invoke-WebRequest "http://localhost:5173/" -UseBasicParsing -TimeoutSec 3 | Out-Null
+                $ok = $true; break
+              } catch { Write-Host "Жду frontend... $i"; Start-Sleep -Seconds 2 }
+            }
+            if (-not $ok) { Get-Content frontend\\frontend.log -ErrorAction SilentlyContinue; throw "Frontend не запустился" }
+            Write-Host "Серверы готовы."
+
+            Push-Location frontend
+            npm run selenium:test
+            $code = $LASTEXITCODE
+            Pop-Location
+            if ($code -ne 0) { throw "Selenium: есть упавшие проверки" }
+          } finally {
+            taskkill /F /T /PID $frontend.Id 2>$null | Out-Null
+            taskkill /F /T /PID $backend.Id 2>$null | Out-Null
+          }
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'backend/backend.log, frontend/frontend.log', allowEmptyArchive: true
+      echo 'Конвейер завершён.'
+    }
+    success {
+      echo 'OK: Все тесты пройдены.'
+    }
+    failure {
+      echo 'FAIL: Есть упавшие тесты — смотрите лог соответствующего этапа.'
+    }
+  }
+}

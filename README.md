@@ -248,6 +248,32 @@ npx newman run postman_collection.json
 В учебном проекте секреты (`JWT_SECRET`) заданы прямо в workflow. В реальном
 проекте их следует хранить в **GitHub Secrets** и подставлять через `${{ secrets.* }}`.
 
+### Jenkins
+
+Те же проверки доступны как декларативный pipeline в [`Jenkinsfile`](Jenkinsfile)
+(этапы: *Зависимости → Сборка и типы → Jest → Newman → Selenium*).
+
+Настройка задачи в Jenkins:
+1. **New Item → Pipeline** (или Multibranch Pipeline).
+2. *Pipeline → Definition*: **Pipeline script from SCM**, укажите репозиторий;
+   *Script Path*: `Jenkinsfile`.
+3. На агенте должны быть **Node.js 20+**, **Google Chrome** и **curl**.
+   Для Node удобно использовать плагин *NodeJS* (раскомментируйте блок `tools`
+   в `Jenkinsfile`).
+
+Серверы поднимаются и тестируются в рамках одного shell-шага (чтобы их не
+завершил ProcessTreeKiller между шагами), логи backend/frontend сохраняются
+как артефакты сборки.
+
+Доступны два файла:
+
+| Файл | Агент | Чем отличается |
+|------|-------|----------------|
+| [`Jenkinsfile`](Jenkinsfile) | Linux/Unix | команды через `sh`, фоновые серверы через `&` + `trap` |
+| [`Jenkinsfile.windows`](Jenkinsfile.windows) | Windows | команды через `bat`, серверы через PowerShell `Start-Process` + `taskkill /T` |
+
+Для Windows-агента в настройке задачи укажите *Script Path*: `Jenkinsfile.windows`.
+
 ## Безопасность (учебный уровень)
 
 - Пароли хранятся как bcrypt-хэши.
